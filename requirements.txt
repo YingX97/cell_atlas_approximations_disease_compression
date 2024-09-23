@@ -1,0 +1,7 @@
+multiprocess
+numpy
+pandas
+cellxgene-census
+anndata
+h5py
+scquill
