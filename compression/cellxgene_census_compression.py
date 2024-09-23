@@ -22,7 +22,7 @@ def func(dataset_id):
         return dataset_id
 
     print(f"Access CENSUS database to retrieve data for dataset: {dataset_id}")
-    
+
     # census_version option: stable or latest.
     # The most recent weekly release can be opened by the APIs by specifying census_version = "latest".
     with cellxgene_census.open_soma(census_version="latest") as census:
@@ -94,6 +94,7 @@ def func(dataset_id):
 
 def pool_callback(dataset_id):
     print(f"Finished pool job for dataset: {dataset_id}", flush=True)
+    # HERE COMES THE MERGIN OF THE TISSUES
 
 
 if __name__ == "__main__":
