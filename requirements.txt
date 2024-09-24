@@ -4,4 +4,4 @@ pandas
 cellxgene-census
 anndata
 h5py
-scquill
+scquill>=0.2.12
