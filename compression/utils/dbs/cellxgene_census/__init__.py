@@ -14,9 +14,14 @@ from utils.write_to_file import (
 )
 
 
-def compress_dataset(data_folder, dataset_id, include_neighborhood=False):
+def compress_dataset(
+    data_folder,
+    dataset_id,
+    include_neighborhood=False,
+    overwrite=False,
+):
     output_fn = f"{data_folder}/approximations/{dataset_id}.h5"
-    if pathlib.Path(output_fn).exists():
+    if not overwrite and pathlib.Path(output_fn).exists():
         print(f"Already completed, skipping: {dataset_id}", flush=True)
         return dataset_id
 
@@ -43,6 +48,10 @@ def compress_dataset(data_folder, dataset_id, include_neighborhood=False):
     print(f"Access completed: {dataset_id}")
 
     print(f"Dataset size: {adata.shape}", flush=True)
+
+    print("Setting gene names as var_names")
+    adata.var.set_index("feature_name", inplace=True, drop=False)
+    # TODO: check that they are unique. They were unique in the one test I ran (Fabio)
 
     try:
         unit, log_transformed = guess_unit_and_log(adata)
@@ -92,9 +101,14 @@ def compress_dataset(data_folder, dataset_id, include_neighborhood=False):
     return dataset_id
 
 
-def compress_dataset_chunked(data_folder, dataset_id, include_neighborhood=False):
+def compress_dataset_chunked(
+    data_folder,
+    dataset_id,
+    include_neighborhood=False,
+    overwrite=False,
+):
     output_fn = f"{data_folder}/approximations/{dataset_id}.h5"
-    if pathlib.Path(output_fn).exists():
+    if not overwrite and pathlib.Path(output_fn).exists():
         print(f"Already completed, skipping: {dataset_id}", flush=True)
         return dataset_id
 
@@ -147,6 +161,10 @@ def compress_dataset_chunked(data_folder, dataset_id, include_neighborhood=False
             if adata.n_obs < 50:
                 continue
 
+            print("Setting gene names as var_names")
+            adata.var.set_index("feature_name", inplace=True, drop=False)
+            # TODO: check that they are unique. They were unique in the one test I ran (Fabio)
+
             try:
                 unit, log_transformed = guess_unit_and_log(adata)
                 if unit is None:
@@ -196,11 +214,15 @@ def compress_dataset_chunked(data_folder, dataset_id, include_neighborhood=False
     else:
         result_dataset = anndata.concat(results_tissues)
     del results_tissues
+
     q = scquill.Compressor.from_anndata(
         adata=result_dataset,
         output_filename=output_fn,
     )
     q.store()
+
+    del q, result_dataset
+    gc.collect()
 
     # first add the unit and whether it is logged based on the uncompressed adata object
     add_unit_and_log_to_compressed_dataset(output_fn, unit, log_transformed)
