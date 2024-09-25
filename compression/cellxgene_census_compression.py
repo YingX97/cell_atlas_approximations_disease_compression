@@ -9,7 +9,6 @@ import concurrent.futures
 from datetime import datetime
 
 from utils.dbs.cellxgene_census import (
-    compress_dataset as _compress_dataset,
     compress_dataset_chunked as _compress_dataset_chunked,
 )
 
@@ -21,20 +20,12 @@ def compress_dataset(
     dataset_id, chunked=True, include_neighborhood=False, overwrite=False
 ):
     """Worker routine to compress the dataset"""
-    if chunked:
-        return _compress_dataset_chunked(
-            data_folder,
-            dataset_id,
-            include_neighborhood=include_neighborhood,
-            overwrite=overwrite,
-        )
-    else:
-        return _compress_dataset(
-            data_folder,
-            dataset_id,
-            include_neighborhood=include_neighborhood,
-            overwrite=overwrite,
-        )
+    return _compress_dataset_chunked(
+        data_folder,
+        dataset_id,
+        include_neighborhood=include_neighborhood,
+        overwrite=overwrite,
+    )
 
 
 def pool_callback(dataset_id):

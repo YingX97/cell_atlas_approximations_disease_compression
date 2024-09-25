@@ -4,109 +4,22 @@ import anndata
 import cellxgene_census
 import scquill
 
-from utils.guess_normalisation import (
-    guess_unit_and_log,
-    guess_unit_and_log_relaxed_method,
-)
-from utils.write_to_file import (
-    add_metadata,
-    add_unit_and_log_to_compressed_dataset,
-)
-
-
-def compress_dataset(
-    data_folder,
-    dataset_id,
-    include_neighborhood=False,
-    overwrite=False,
-):
-    output_fn = f"{data_folder}/approximations/{dataset_id}.h5"
-    if not overwrite and pathlib.Path(output_fn).exists():
-        print(f"Already completed, skipping: {dataset_id}", flush=True)
-        return dataset_id
-
-    print(f"Access CENSUS database to retrieve data for dataset: {dataset_id}")
-
-    # census_version option: stable or latest.
-    # The most recent weekly release can be opened by the APIs by specifying census_version = "latest".
-    with cellxgene_census.open_soma(census_version="latest") as census:
-        adata = cellxgene_census.get_anndata(
-            census=census,
-            organism="Homo sapiens",
-            obs_value_filter=f"dataset_id == '{dataset_id}'",
-            obs_column_names=[
-                "assay",
-                "cell_type",
-                "tissue",
-                "tissue_general",
-                "suspension_type",
-                "disease",
-                "sex",
-                "development_stage",
-            ],
-        )
-    print(f"Access completed: {dataset_id}")
-
-    print(f"Dataset size: {adata.shape}", flush=True)
-
-    print("Setting gene names as var_names")
-    adata.var.set_index("feature_name", inplace=True, drop=False)
-    # TODO: check that they are unique. They were unique in the one test I ran (Fabio)
-
-    try:
-        unit, log_transformed = guess_unit_and_log(adata)
-        if unit is None:
-            unit, log_transformed = guess_unit_and_log_relaxed_method(adata)
-
-        if unit is None:
-            exit(f"Cannot guess normalisation for {dataset_id}")
-
-        normalisation = unit if not log_transformed else unit + "+logp1"
-
-        print(f"Build approximation for dataset: {dataset_id}")
-        q = scquill.Compressor(
-            adata=adata,
-            celltype_column="cell_type",
-            output_filename=output_fn,
-            additional_groupby_columns=(
-                "tissue",
-                "tissue_general",
-                "disease",
-                "sex",
-                "development_stage",
-            ),
-            configuration={"normalisation": normalisation} if normalisation else {},
-            include_neighborhood=include_neighborhood,
-        )
-        q()
-
-        print(f"Successfully approximated: {dataset_id}")
-
-        # first add the unit and whether it is logged based on the uncompressed adata object
-        add_unit_and_log_to_compressed_dataset(output_fn, unit, log_transformed)
-
-        # second, use the compressed data, and summarise the metadata and add to the file's attribute
-        add_metadata(output_fn)
-
-    except Exception as e:
-        print(f"Error during compression for dataset {dataset_id}: {e}", flush=True)
-        raise
-
-    if pathlib.Path(output_fn).exists():
-        print(f"Successfully created: {output_fn}", flush=True)
-    else:
-        print(f"Failed to create: {output_fn}", flush=True)
-        raise RuntimeError(f"Failed to create output file for dataset {dataset_id}")
-
-    return dataset_id
-
 
 def compress_dataset_chunked(
     data_folder,
     dataset_id,
     include_neighborhood=False,
     overwrite=False,
+    groupby=("tissue_general", "disease", "development_stage_general", "sex"),
+    chunkby=("tissue_general", "cell_type"),
+    optional_chunkby=("disease",),
 ):
+    """Compress a dataset in chunks.
+
+    The chunking is somewhat dynamic, based on the number of cells in the dataset. The logic is to chunk by
+    avoid giant chunks at all costs since they are the ones bottlenecking RAM usage.
+    """
+
     output_fn = f"{data_folder}/approximations/{dataset_id}.h5"
     if not overwrite and pathlib.Path(output_fn).exists():
         print(f"Already completed, skipping: {dataset_id}", flush=True)
@@ -129,23 +42,37 @@ def compress_dataset_chunked(
             organism="Homo sapiens",
             value_filter=f"dataset_id == '{dataset_id}'",
             column_names=[
+                "cell_type",
                 "tissue_general",
+                "disease",
             ],
         )
         print(f"Access completed (tissue metadata): {dataset_id}")
+        obs["c"] = 1
 
-        # Extract the tissues
-        tissue_counts = obs["tissue_general"].value_counts()
-        tissues = tissue_counts[tissue_counts > 0].index
+        # Set up the chunking
+        chunkby_this = list(chunkby)
+        chunk_cell_counts = obs.groupby(list(chunkby), observed=True).size()
+        chunk_cell_counts = chunk_cell_counts[chunk_cell_counts >= 3]
+        # If the chunking is too coarse, subchunk
+        if chunk_cell_counts.max() > 5e4:
+            chunkby_this = list(chunkby) + list(optional_chunkby)
+            chunk_cell_counts = obs.groupby(list(chunkby_this), observed=True).size()
+            chunk_cell_counts = chunk_cell_counts[chunk_cell_counts >= 3]
 
-        for tissue in tissues:
+        chunks = chunk_cell_counts.index
+        for chunk in chunks:
+            obs_filter_string = f"(dataset_id == '{dataset_id}')"
+            for key, value in zip(chunkby_this, chunk):
+                obs_filter_string += f" & ({key} == '{value}')"
+
             adata = cellxgene_census.get_anndata(
                 census=census,
                 organism="Homo sapiens",
-                obs_value_filter=f"(dataset_id == '{dataset_id}') & (tissue_general == '{tissue}')",
+                obs_value_filter=obs_filter_string,
                 obs_column_names=[
-                    "assay",
                     "cell_type",
+                    "assay",
                     "tissue",
                     "tissue_general",
                     "suspension_type",
@@ -154,48 +81,34 @@ def compress_dataset_chunked(
                     "development_stage",
                 ],
             )
-            print(
-                f"Access completed (counts): {dataset_id}, {tissue}, {adata.n_obs} cells"
-            )
 
-            if adata.n_obs < 50:
-                continue
+            ncells = chunk_cell_counts[chunk]
+            log_string = dataset_id
+            for key, value in zip(chunkby_this, chunk):
+                log_string += f", {value}"
+            log_string += f" {ncells} cells"
+            print(f"Access completed (counts): {log_string}")
+
+            print("Postprocess cellxgene obs metadata")
+            _postprocess_cellxgene_metadata(adata)
 
             print("Setting gene names as var_names")
             adata.var.set_index("feature_name", inplace=True, drop=False)
             # TODO: check that they are unique. They were unique in the one test I ran (Fabio)
 
             try:
-                unit, log_transformed = guess_unit_and_log(adata)
-                if unit is None:
-                    unit, log_transformed = guess_unit_and_log_relaxed_method(adata)
-
-                if unit is None:
-                    exit(f"Cannot guess normalisation for {dataset_id}, {tissue}")
-
-                normalisation = unit if not log_transformed else unit + "+logp1"
-
-                print(f"Build approximation for dataset: {dataset_id}, {tissue}")
+                print(f"Build approximation for dataset: {dataset_id}")
                 q = scquill.Compressor(
                     adata=adata,
                     celltype_column="cell_type",
-                    additional_groupby_columns=(
-                        "tissue",
-                        "tissue_general",
-                        "disease",
-                        "sex",
-                        "development_stage",
-                    ),
-                    configuration=(
-                        {"normalisation": normalisation} if normalisation else {}
-                    ),
+                    additional_groupby_columns=groupby,
                     include_neighborhood=include_neighborhood,
                 )
                 q.prepare()
                 q.compress()
                 # FIXME: This misses the neighbourhoods!
                 results_tissues.append(q.to_anndata())
-                print(f"Successfully approximated: {dataset_id}, {tissue}")
+                print(f"Successfully approximated: {log_string}")
 
                 # Manual garbage management to reduce memory usage
                 del q
@@ -203,13 +116,13 @@ def compress_dataset_chunked(
 
             except Exception as e:
                 print(
-                    f"Error during compression for dataset {dataset_id}: {e}",
+                    f"Error during compression for {log_string}: {e}",
                     flush=True,
                 )
                 raise
 
-    print(f"Merging tissues from dataset: {dataset_id}")
-    if len(tissues) == 1:
+    print(f"Merging chunks from dataset: {dataset_id}")
+    if len(chunks) == 1:
         result_dataset = results_tissues[0]
     else:
         result_dataset = anndata.concat(results_tissues)
@@ -224,11 +137,34 @@ def compress_dataset_chunked(
     del q, result_dataset
     gc.collect()
 
-    # first add the unit and whether it is logged based on the uncompressed adata object
-    add_unit_and_log_to_compressed_dataset(output_fn, unit, log_transformed)
-
-    # second, use the compressed data, and summarise the metadata and add to the file's attribute
-    add_metadata(output_fn)
     print(f"Successfully approximated: {dataset_id}")
 
     return dataset_id
+
+
+def _postprocess_cellxgene_metadata(adata: anndata.AnnData):
+    adata.obs["development_stage_general"] = adata.obs["development_stage"].astype(
+        object
+    )
+    stages = adata.obs["development_stage"].value_counts()
+    stages = stages[stages >= 0].index
+    for stage in stages:
+        new_stage = _convert_development_stage(stage)
+        adata.obs.loc[
+            adata.obs["development_stage"] == stage, "development_stage_general"
+        ] = new_stage
+
+
+def _convert_development_stage(stage):
+    if "mature" in stage.lower():
+        return "adult"
+    if "human adult" in stage.lower():
+        return "adult"
+    if "-year-old human" in stage.lower():
+        return "adult"
+    if "-month-old human" in stage.lower():
+        return "child"
+    if "fetal" in stage.lower():
+        return "fetal"
+    if "embryonic" in stage.lower():
+        return "fetal"
