@@ -17,7 +17,8 @@ data_folder = pathlib.Path("__file__").absolute().parent.parent / "data"
 
 
 def compress_dataset(
-    dataset_id, chunked=True, include_neighborhood=False, overwrite=False
+    dataset_id, chunked=True, include_neighborhood=False, overwrite=False,
+    cache_adata=False,
 ):
     """Worker routine to compress the dataset"""
     return _compress_dataset_chunked(
@@ -25,6 +26,7 @@ def compress_dataset(
         dataset_id,
         include_neighborhood=include_neighborhood,
         overwrite=overwrite,
+        cache_adata=cache_adata,
     )
 
 
@@ -72,6 +74,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Shuffle the datasets before processing",
     )
+    parser.add_argument(
+        "--cache-adata",
+        action="store_true",
+        help="Cache adata for faster iteration (will use a lot of disk space!)",
+    )
     args = parser.parse_args()
 
     today = datetime.today().strftime("%d_%b_%Y")
@@ -117,7 +124,7 @@ if __name__ == "__main__":
         for dataset_id in dataset_ids:
             ncells = dataset_id_count[dataset_id]
             print(f"Starting dataset {dataset_id} with {ncells} cells")
-            compress_dataset(dataset_id, overwrite=args.overwrite)
+            compress_dataset(dataset_id, overwrite=args.overwrite, cache_adata=args.cache_adata)
             break
     elif args.threads == 1:
         ndata = len(dataset_ids)
@@ -127,7 +134,7 @@ if __name__ == "__main__":
                 f"Starting dataset {i+1} / {ndata}: {dataset_id} with {ncells} cells",
                 flush=True,
             )
-            compress_dataset(dataset_id, overwrite=args.overwrite)
+            compress_dataset(dataset_id, overwrite=args.overwrite, cache_adata=args.cache_adata)
 
     elif not args.multiprocess:
         with concurrent.futures.ThreadPoolExecutor(
@@ -137,7 +144,7 @@ if __name__ == "__main__":
             for i, dataset_id in enumerate(dataset_ids):
                 print(f"Submitting dataset {i+1} / {len(dataset_ids)}: {dataset_id}")
                 future = executor.submit(
-                    compress_dataset, dataset_id, overwrite=args.overwrite
+                    compress_dataset, dataset_id, overwrite=args.overwrite, cache_adata=args.cache_adata
                 )
                 future.add_done_callback(lambda x: pool_callback(x.result()))
                 futures.append(future)

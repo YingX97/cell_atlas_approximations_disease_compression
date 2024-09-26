@@ -1,3 +1,4 @@
+import os
 import pathlib
 import gc
 import anndata
@@ -10,6 +11,7 @@ def compress_dataset_chunked(
     dataset_id,
     include_neighborhood=False,
     overwrite=False,
+    cache_adata=False,
     groupby=("tissue_general", "disease", "development_stage_general", "sex"),
     chunkby=("tissue_general", "cell_type"),
     optional_chunkby=("disease",),
@@ -62,25 +64,41 @@ def compress_dataset_chunked(
 
         chunks = chunk_cell_counts.index
         for chunk in chunks:
-            obs_filter_string = f"(dataset_id == '{dataset_id}')"
-            for key, value in zip(chunkby_this, chunk):
-                obs_filter_string += f" & ({key} == '{value}')"
 
-            adata = cellxgene_census.get_anndata(
-                census=census,
-                organism="Homo sapiens",
-                obs_value_filter=obs_filter_string,
-                obs_column_names=[
-                    "cell_type",
-                    "assay",
-                    "tissue",
-                    "tissue_general",
-                    "suspension_type",
-                    "disease",
-                    "sex",
-                    "development_stage",
-                ],
-            )
+            print("Check adata cache")
+            cache_fn = dataset_id
+            for key, value in zip(chunkby_this, chunk):
+                cache_fn += f"::{value}"
+            cache_fn += ".h5ad"
+            cache_fn = pathlib.Path(data_folder) / "__adata_cache__" / cache_fn
+            if cache_fn.exists():
+                print("Cache hit, reading h5ad file...")
+                adata = anndata.read_h5ad(cache_fn)
+            else:
+                print("Cache miss, requesting adata from census...")
+                obs_filter_string = f"(dataset_id == '{dataset_id}')"
+                for key, value in zip(chunkby_this, chunk):
+                    obs_filter_string += f" & ({key} == '{value}')"
+
+                adata = cellxgene_census.get_anndata(
+                    census=census,
+                    organism="Homo sapiens",
+                    obs_value_filter=obs_filter_string,
+                    obs_column_names=[
+                        "cell_type",
+                        "assay",
+                        "tissue",
+                        "tissue_general",
+                        "suspension_type",
+                        "disease",
+                        "sex",
+                        "development_stage",
+                    ],
+                )
+                if cache_adata:
+                    print("Store adata cache file")
+                    os.makedirs(cache_fn.parent, exist_ok=True)
+                    adata.write(cache_fn)
 
             ncells = chunk_cell_counts[chunk]
             log_string = dataset_id
